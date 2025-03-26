@@ -66,20 +66,59 @@ class Opinion(BaseModel):
 
 
 class RAGPipeline:
-    def __init__(self, index_path: str = "faiss_index", model_id: str = "phi", **model_kwargs):
+    def __init__(self, index_path: str = "faiss_index", model_id: str = "phi", use_gpu: bool = True, **model_kwargs):
         """
         Инициализация RAG-пайплайна.
         
         Args:
             index_path: Путь к индексу FAISS
             model_id: ID языковой модели ('phi', 'gemma', 'qwen', 'saiga')
+            use_gpu: Использовать ли GPU для FAISS (если доступно)
             **model_kwargs: Дополнительные параметры для инициализации языковой модели
         """
         # Используем SentenceTransformers для эмбеддингов
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
+        
+        # Проверяем доступность CUDA для FAISS
+        self.use_gpu = use_gpu
+        self.gpu_available = False
+        
+        try:
+            import torch
+            if torch.cuda.is_available() and use_gpu:
+                import faiss
+                self.gpu_available = hasattr(faiss, 'StandardGpuResources')
+                if self.gpu_available:
+                    print("FAISS будет использовать GPU для ускорения поиска")
+                    self.gpu_res = faiss.StandardGpuResources()
+        except ImportError:
+            print("Не удалось импортировать необходимые библиотеки для GPU-FAISS")
+            self.gpu_available = False
+            
+        # Загружаем векторное хранилище
         self.vectorstore = FAISS.load_local(index_path, self.embeddings, allow_dangerous_deserialization=True)
+        
+        # Если доступен GPU и он был запрошен, перемещаем индекс на GPU
+        if self.gpu_available:
+            try:
+                import faiss
+                print("Перемещаем индекс FAISS на GPU...")
+                # Получаем исходный индекс
+                index = self.vectorstore.index
+                
+                # Перемещаем на GPU
+                self.gpu_index = faiss.index_cpu_to_gpu(self.gpu_res, 0, index)
+                
+                # Заменяем индекс в векторном хранилище
+                self.vectorstore.index = self.gpu_index
+                
+                print("Индекс FAISS успешно перемещен на GPU")
+            except Exception as e:
+                print(f"Ошибка при перемещении индекса FAISS на GPU: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Инициализируем LLM через фабрику
         self.llm = LLMFactory.get_model(model_id, **model_kwargs)
@@ -92,6 +131,8 @@ class RAGPipeline:
         self.parser = PydanticOutputParser(pydantic_object=RAGResponse)
         
         print(f"Модель {self.llm.model_name} инициализирована, устройство: {self.llm.device}")
+        if self.gpu_available:
+            print(f"FAISS использует GPU: {torch.cuda.get_device_name(0)}")
 
     def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict]:
         """Получение релевантных документов."""

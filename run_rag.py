@@ -7,6 +7,7 @@ import argparse
 from dotenv import load_dotenv
 from src.rag.llm_factory import LLMFactory
 from src.rag.rag_pipeline import RAGPipeline
+from src.utils.cuda_check import check_cuda
 
 def list_models():
     """Выводит список доступных моделей"""
@@ -35,9 +36,20 @@ def main():
                       help="Показать список доступных моделей и выйти")
     parser.add_argument("--index-path", type=str, default="faiss_index",
                       help="Путь к индексу векторной базы данных")
+    parser.add_argument("--use-cuda", action="store_true", default=True,
+                      help="Использовать CUDA для ускорения (если доступно)")
+    parser.add_argument("--no-cuda", action="store_true",
+                      help="Не использовать CUDA даже если доступно")
+    parser.add_argument("--check-cuda", action="store_true",
+                      help="Проверить доступность CUDA и выйти")
     
     # Парсим аргументы
     args = parser.parse_args()
+    
+    # Проверяем доступность CUDA, если запрошено
+    if args.check_cuda:
+        check_cuda()
+        return
     
     # Показываем список моделей и выходим, если требуется
     if args.list_models:
@@ -49,6 +61,24 @@ def main():
         print(f"Ошибка: Модель '{args.model}' не найдена.")
         list_models()
         return
+    
+    # Определяем, использовать ли CUDA
+    use_cuda = args.use_cuda and not args.no_cuda
+    if use_cuda:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"CUDA доступна: {torch.cuda.get_device_name(0)}")
+                # Настраиваем переменные окружения для оптимальной работы CUDA
+                os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+            else:
+                print("CUDA недоступна, будет использован CPU")
+                use_cuda = False
+        except ImportError:
+            print("Не удалось импортировать torch, будет использован CPU")
+            use_cuda = False
+    else:
+        print("CUDA отключена пользователем, будет использован CPU")
     
     # Запрашиваем ввод запроса, если он не был предоставлен
     query = args.query
@@ -64,13 +94,15 @@ def main():
     print(f"Режим:       {'Вопрос-ответ' if args.mode == 'qa' else 'Сравнительный анализ'}")
     print(f"Температура: {args.temperature}")
     print(f"Индекс:      {args.index_path}")
+    print(f"CUDA:        {'Включена' if use_cuda else 'Отключена'}")
     print("=" * 40)
     
     # Инициализируем пайплайн с выбранной моделью
     pipeline = RAGPipeline(
         index_path=args.index_path,
         model_id=args.model,
-        temperature=args.temperature
+        temperature=args.temperature,
+        use_gpu=use_cuda
     )
     
     # Выполняем запрос в зависимости от режима

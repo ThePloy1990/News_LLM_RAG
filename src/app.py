@@ -3,6 +3,7 @@ from rag.rag_pipeline import RAGPipeline
 from data.fetch_twitter import main as fetch_twitter
 from data.prepare_data import main as prepare_data
 from rag.build_index import main as build_index
+from benchmark.run_benchmarks import run_all_benchmarks
 
 
 @click.group()
@@ -65,6 +66,23 @@ def search(query):
         if 'url' in doc:
             click.echo(f"URL: {doc['url']}")
         click.echo("---")
+
+
+@cli.command()
+@click.option("--models", "-m", multiple=True, default=["phi", "qwen"],
+              help="Модели для тестирования (можно указать несколько)")
+@click.option("--mode", type=click.Choice(["qa", "compare"]), default="qa",
+              help="Режим работы: qa - ответы на вопросы, compare - сравнительный анализ")
+def benchmark(models, mode):
+    """Запуск бенчмаркинга для сравнения моделей."""
+    click.echo(f"Запуск бенчмаркинга для моделей: {', '.join(models)} в режиме {mode}")
+    
+    models_list = list(models)  # преобразуем кортеж в список для передачи функции
+    
+    # Запускаем полный бенчмарк
+    run_all_benchmarks(models=models_list, mode=mode)
+    
+    click.echo("Бенчмаркинг завершен. Результаты сохранены в директории benchmark_results")
 
 
 if __name__ == "__main__":

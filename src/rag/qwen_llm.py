@@ -34,6 +34,12 @@ class QwenLLM(LLM):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Устройство для Qwen: {self.device}")
         
+        if self.device == "cuda":
+            # Вывод информации о GPU
+            print(f"Доступно GPU: {torch.cuda.device_count()}")
+            print(f"Активная GPU: {torch.cuda.get_device_name(0)}")
+            print(f"Память GPU: {torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024:.2f} ГБ")
+        
         try:
             print(f"Загрузка модели {self.model_name}...")
             
@@ -43,12 +49,27 @@ class QwenLLM(LLM):
                 trust_remote_code=True
             )
             
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                device_map="auto" if self.device == "cuda" else "cpu",
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                trust_remote_code=True
-            )
+            # Отптимизированная загрузка модели для RTX 4090
+            if self.device == "cuda":
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    device_map="auto",  # Автоматическое распределение слоев по доступным GPU
+                    torch_dtype=torch.float16,  # Используем float16 для большей производительности
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,  # Снижаем использование CPU памяти
+                    # 4-битное квантование для Qwen (если доступно)
+                    quantization_config={"load_in_4bit": True, "bnb_4bit_compute_dtype": torch.float16} 
+                    if hasattr(torch, "bfloat16") else None
+                )
+                # Оптимизации CUDA
+                torch.backends.cudnn.benchmark = True
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    device_map="cpu",
+                    torch_dtype=torch.float32,
+                    trust_remote_code=True
+                )
             
             print(f"Модель {self.model_name} успешно загружена")
             
@@ -87,16 +108,29 @@ class QwenLLM(LLM):
             # Токенизируем вход
             inputs = self.tokenizer(input_text, return_tensors="pt").to(self.device)
             
-            # Генерируем ответ напрямую через модель, отключаем кэширование
+            # Очистка памяти CUDA перед генерацией
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            
+            # Генерируем ответ
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=self.temperature,
-                    repetition_penalty=self.repetition_penalty,
-                    do_sample=True,
-                    use_cache=False  # Отключаем кэш для избежания ошибки
-                )
+                # Параметры генерации
+                generation_config = {
+                    "max_new_tokens": self.max_new_tokens,
+                    "temperature": self.temperature,
+                    "repetition_penalty": self.repetition_penalty,
+                    "do_sample": True,
+                    "use_cache": True  # Включаем кеширование для скорости
+                }
+                
+                # Добавляем оптимизации для CUDA
+                if self.device == "cuda":
+                    generation_config.update({
+                        "pad_token_id": self.tokenizer.eos_token_id,
+                        "attention_mask": inputs.get("attention_mask", None)
+                    })
+                
+                outputs = self.model.generate(**inputs, **generation_config)
             
             try:
                 # Декодируем и получаем только новые токены

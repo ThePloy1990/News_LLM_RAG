@@ -34,6 +34,12 @@ class PhiLLM(LLM):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Устройство для Phi: {self.device}")
         
+        if self.device == "cuda":
+            # Вывод информации о GPU
+            print(f"Доступно GPU: {torch.cuda.device_count()}")
+            print(f"Активная GPU: {torch.cuda.get_device_name(0)}")
+            print(f"Память GPU: {torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024:.2f} ГБ")
+        
         try:
             print(f"Загрузка модели {self.model_name}...")
             
@@ -43,13 +49,24 @@ class PhiLLM(LLM):
                 trust_remote_code=True
             )
             
-            # При загрузке модели указываем use_cache=False, чтобы избежать проблем с кэшем
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                device_map="auto" if self.device == "cuda" else "cpu",
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-                trust_remote_code=True
-            )
+            # При загрузке модели указываем дополнительные параметры для оптимизации CUDA
+            if self.device == "cuda":
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    device_map="auto",
+                    torch_dtype=torch.float16,  # Используем float16 для экономии памяти на RTX 4090
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True     # Снижаем использование CPU памяти
+                )
+                # Устанавливаем CUDA оптимизации
+                torch.backends.cudnn.benchmark = True  # Оптимизация для постоянных размеров входов
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    device_map="cpu",
+                    torch_dtype=torch.float32,
+                    trust_remote_code=True
+                )
             
             print(f"Модель {self.model_name} успешно загружена")
             
@@ -78,17 +95,29 @@ class PhiLLM(LLM):
             # Токенизируем вход
             inputs = self.tokenizer(input_text, return_tensors="pt").to(self.device)
             
-            # Генерируем ответ напрямую через модель, отключаем кэширование
+            # Генерируем ответ напрямую через модель
             with torch.no_grad():
-                # Отключаем кэширование, чтобы избежать ошибки DynamicCache
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=self.temperature,
-                    repetition_penalty=self.repetition_penalty,
-                    do_sample=True,
-                    use_cache=False  # Отключаем кэш для избежания ошибки
-                )
+                if self.device == "cuda":
+                    # Очищаем кэш CUDA перед генерацией для освобождения памяти
+                    torch.cuda.empty_cache()
+                    
+                # Устанавливаем параметры генерации
+                generation_config = {
+                    "max_new_tokens": self.max_new_tokens,
+                    "temperature": self.temperature,
+                    "repetition_penalty": self.repetition_penalty,
+                    "do_sample": True,
+                    "use_cache": True  # Включаем кэш для ускорения генерации
+                }
+                
+                # Для CUDA добавляем дополнительные оптимизации
+                if self.device == "cuda":
+                    generation_config.update({
+                        "pad_token_id": self.tokenizer.eos_token_id,
+                        "attention_mask": inputs.get("attention_mask", None)
+                    })
+                
+                outputs = self.model.generate(**inputs, **generation_config)
             
             # Декодируем выход (полностью)
             full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
