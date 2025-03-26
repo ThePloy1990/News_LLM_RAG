@@ -7,7 +7,7 @@ import argparse
 from dotenv import load_dotenv
 from src.rag.llm_factory import LLMFactory
 from src.rag.rag_pipeline import RAGPipeline
-from src.utils.cuda_check import check_cuda
+# from src.utils.cuda_check import check_cuda
 
 def list_models():
     """Выводит список доступных моделей"""
