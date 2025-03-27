@@ -120,16 +120,12 @@ class QwenLLM(LLM):
                     "temperature": self.temperature,
                     "repetition_penalty": self.repetition_penalty,
                     "do_sample": True,
-                    "use_cache": True  # Включаем кеширование для скорости
+                    "use_cache": True,  # Включаем кеширование для скорости
+                    "pad_token_id": self.tokenizer.eos_token_id
                 }
                 
-                # Добавляем оптимизации для CUDA
-                if self.device == "cuda":
-                    generation_config.update({
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "attention_mask": inputs.get("attention_mask", None)
-                    })
-                
+                # Не передаём attention_mask дважды
+                # Из inputs уже берётся attention_mask
                 outputs = self.model.generate(**inputs, **generation_config)
             
             try:
