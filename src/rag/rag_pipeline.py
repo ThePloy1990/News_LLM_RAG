@@ -2,7 +2,13 @@ import os
 from typing import List, Dict, Any, Optional, Union
 from dotenv import load_dotenv
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+# Импортируем FAISS с обработкой возможной ошибки
+try:
+    from langchain_community.vectorstores import FAISS
+    FAISS_AVAILABLE = True
+except ImportError:
+    print("ПРЕДУПРЕЖДЕНИЕ: Не удалось импортировать FAISS. Будет использована упрощенная версия векторного хранилища.")
+    FAISS_AVAILABLE = False
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -65,6 +71,63 @@ class Opinion(BaseModel):
     confidence: float = Field(description="Уверенность в анализе (от 0 до 1)")
 
 
+# Реализация простого векторного хранилища, если FAISS недоступен
+class SimpleVectorStore:
+    """Простая замена FAISS для случаев, когда FAISS недоступен"""
+    def __init__(self, embeddings, documents):
+        """Инициализация простого векторного хранилища"""
+        self.embeddings = embeddings
+        self.documents = documents if documents else []
+        self.document_embeddings = []
+        
+        # Подготавливаем эмбеддинги для документов
+        if documents:
+            texts = [doc.page_content for doc in documents]
+            self.document_embeddings = embeddings.embed_documents(texts)
+    
+    def similarity_search(self, query, k=5):
+        """Поиск k наиболее похожих документов"""
+        import numpy as np
+        from sklearn.metrics.pairwise import cosine_similarity
+        
+        # Если документов нет, возвращаем пустой список
+        if not self.documents:
+            return []
+        
+        # Получаем эмбеддинг для запроса
+        query_embedding = self.embeddings.embed_query(query)
+        
+        # Преобразуем в numpy массивы
+        query_embedding_np = np.array(query_embedding).reshape(1, -1)
+        document_embeddings_np = np.array(self.document_embeddings)
+        
+        # Рассчитываем косинусное сходство
+        similarities = cosine_similarity(query_embedding_np, document_embeddings_np).flatten()
+        
+        # Получаем индексы k наиболее похожих документов
+        indices = np.argsort(similarities)[::-1][:k]
+        
+        # Возвращаем наиболее похожие документы
+        return [self.documents[i] for i in indices]
+    
+    @classmethod
+    def load_local(cls, folder_path, embeddings, allow_dangerous_deserialization=False):
+        """Загрузка из локальной директории"""
+        import pickle
+        import os
+        
+        # Загружаем документы из файла
+        docs_path = os.path.join(folder_path, "documents.pkl")
+        if os.path.exists(docs_path):
+            with open(docs_path, "rb") as f:
+                documents = pickle.load(f)
+        else:
+            print("Предупреждение: файл documents.pkl не найден")
+            documents = []
+        
+        return cls(embeddings, documents)
+
+
 class RAGPipeline:
     def __init__(self, index_path: str = "faiss_index", model_id: str = "phi", use_gpu: bool = True, **model_kwargs):
         """
@@ -82,43 +145,27 @@ class RAGPipeline:
         )
         
         # Проверяем доступность CUDA для FAISS
-        self.use_gpu = use_gpu
+        self.use_gpu = False  # Принудительно отключаем GPU для FAISS из-за проблем совместимости
         self.gpu_available = False
         
-        try:
-            import torch
-            if torch.cuda.is_available() and use_gpu:
-                import faiss
-                self.gpu_available = hasattr(faiss, 'StandardGpuResources')
-                if self.gpu_available:
-                    print("FAISS будет использовать GPU для ускорения поиска")
-                    self.gpu_res = faiss.StandardGpuResources()
-        except ImportError:
-            print("Не удалось импортировать необходимые библиотеки для GPU-FAISS")
-            self.gpu_available = False
-            
         # Загружаем векторное хранилище
-        self.vectorstore = FAISS.load_local(index_path, self.embeddings, allow_dangerous_deserialization=True)
-        
-        # Если доступен GPU и он был запрошен, перемещаем индекс на GPU
-        if self.gpu_available:
-            try:
-                import faiss
-                print("Перемещаем индекс FAISS на GPU...")
-                # Получаем исходный индекс
-                index = self.vectorstore.index
-                
-                # Перемещаем на GPU
-                self.gpu_index = faiss.index_cpu_to_gpu(self.gpu_res, 0, index)
-                
-                # Заменяем индекс в векторном хранилище
-                self.vectorstore.index = self.gpu_index
-                
-                print("Индекс FAISS успешно перемещен на GPU")
-            except Exception as e:
-                print(f"Ошибка при перемещении индекса FAISS на GPU: {e}")
-                import traceback
-                traceback.print_exc()
+        try:
+            if FAISS_AVAILABLE:
+                self.vectorstore = FAISS.load_local(index_path, self.embeddings, allow_dangerous_deserialization=True)
+                print("Индекс FAISS успешно загружен")
+            else:
+                # Используем простую замену FAISS
+                print("Используем простое векторное хранилище вместо FAISS")
+                self.vectorstore = SimpleVectorStore.load_local(index_path, self.embeddings)
+        except Exception as e:
+            print(f"Ошибка при загрузке индекса: {e}")
+            import traceback
+            traceback.print_exc()
+            # Создаем пустое хранилище в случае ошибки
+            if FAISS_AVAILABLE:
+                self.vectorstore = FAISS.from_texts(["Заглушка для отладки"], self.embeddings)
+            else:
+                self.vectorstore = SimpleVectorStore(self.embeddings, [Document(page_content="Заглушка для отладки", metadata={"author": "система", "date": "сегодня"})])
         
         # Инициализируем LLM через фабрику
         self.llm = LLMFactory.get_model(model_id, **model_kwargs)
@@ -131,8 +178,16 @@ class RAGPipeline:
         self.parser = PydanticOutputParser(pydantic_object=RAGResponse)
         
         print(f"Модель {self.llm.model_name} инициализирована, устройство: {self.llm.device}")
-        if self.gpu_available:
-            print(f"FAISS использует GPU: {torch.cuda.get_device_name(0)}")
+        
+        # Информация о CUDA для модели 
+        try:
+            import torch
+            if torch.cuda.is_available() and use_gpu:
+                print(f"LLM использует GPU: {torch.cuda.get_device_name(0)}")
+                print(f"Доступная память GPU: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} ГБ")
+                print(f"Используемая память GPU: {torch.cuda.memory_allocated(0) / 1024**3:.2f} ГБ")
+        except Exception as e:
+            print(f"Ошибка при проверке памяти GPU: {e}")
 
     def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict]:
         """Получение релевантных документов."""

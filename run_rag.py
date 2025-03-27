@@ -7,7 +7,7 @@ import argparse
 from dotenv import load_dotenv
 from src.rag.llm_factory import LLMFactory
 from src.rag.rag_pipeline import RAGPipeline
-# from src.utils.cuda_check import check_cuda
+from src.utils.cuda_check import check_cuda
 
 def list_models():
     """Выводит список доступных моделей"""
@@ -97,16 +97,17 @@ def main():
     print(f"CUDA:        {'Включена' if use_cuda else 'Отключена'}")
     print("=" * 40)
     
-    # Инициализируем пайплайн с выбранной моделью
-    pipeline = RAGPipeline(
-        index_path=args.index_path,
-        model_id=args.model,
-        temperature=args.temperature,
-        use_gpu=use_cuda
-    )
-    
-    # Выполняем запрос в зависимости от режима
+    # Принудительно отключаем GPU для FAISS из-за проблем с совместимостью
     try:
+        # Инициализируем пайплайн с выбранной моделью, но отключаем GPU для FAISS
+        pipeline = RAGPipeline(
+            index_path=args.index_path,
+            model_id=args.model,
+            temperature=args.temperature,
+            use_gpu=False  # Принудительно отключаем GPU для FAISS
+        )
+        
+        # Выполняем запрос в зависимости от режима
         if args.mode == "qa":
             print("\n=== Ответ на вопрос ===")
             answer = pipeline.generate_qa_response(query)
