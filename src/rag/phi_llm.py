@@ -107,15 +107,11 @@ class PhiLLM(LLM):
                     "temperature": self.temperature,
                     "repetition_penalty": self.repetition_penalty,
                     "do_sample": True,
-                    "use_cache": True  # Включаем кэш для ускорения генерации
+                    "use_cache": True,  # Включаем кэш для ускорения генерации
+                    "pad_token_id": self.tokenizer.eos_token_id
                 }
                 
-                # Для CUDA добавляем дополнительные оптимизации
-                if self.device == "cuda":
-                    generation_config.update({
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "attention_mask": inputs.get("attention_mask", None)
-                    })
+                # Не передаём attention_mask дважды, он уже есть в inputs
                 
                 outputs = self.model.generate(**inputs, **generation_config)
             

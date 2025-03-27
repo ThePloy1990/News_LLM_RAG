@@ -207,6 +207,9 @@ def run_comparison_benchmark(model_ids: List[str], mode: str = "qa",
         queries: Список запросов для тестирования
         save_results: Сохранять результаты в файл
         plot_results: Построить график результатов
+        
+    Returns:
+        List[Dict]: Список результатов с ключом model_id для каждой модели
     """
     if queries is None:
         queries = BENCHMARK_QUERIES
@@ -220,6 +223,9 @@ def run_comparison_benchmark(model_ids: List[str], mode: str = "qa",
     
     for model_id in model_ids:
         results = run_model_benchmark(model_id, mode, queries, verbose=True)
+        # Убедимся, что в результатах есть ключ model_id
+        if "model_id" not in results:
+            results["model_id"] = model_id
         all_results.append(results)
         
         # Даем системе время для освобождения ресурсов
@@ -242,6 +248,8 @@ def run_comparison_benchmark(model_ids: List[str], mode: str = "qa",
     # Строим графики сравнения
     if plot_results:
         plot_comparison_results(all_results)
+    
+    return all_results
 
 def plot_comparison_results(results: List[Dict]):
     """Строит графики для сравнения результатов бенчмарка."""

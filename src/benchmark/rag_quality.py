@@ -336,6 +336,9 @@ def compare_models_quality(model_ids: List[str], mode: str = "qa",
         questions: Список вопросов для тестирования
         save_results: Сохранять результаты в файл
         plot_results: Строить графики результатов
+        
+    Returns:
+        List[Dict]: Список результатов для каждой модели с ключом model_id
     """
     if questions is None:
         questions = EVALUATION_QUESTIONS
@@ -349,7 +352,11 @@ def compare_models_quality(model_ids: List[str], mode: str = "qa",
     
     for model_id in model_ids:
         evaluation = run_rag_evaluation(model_id, mode, questions, verbose=True, save_results=True)
-        all_results.append(evaluation["summary"])
+        summary = evaluation["summary"]
+        # Добавляем model_id в словарь, если его нет
+        if "model_id" not in summary:
+            summary["model_id"] = model_id
+        all_results.append(summary)
     
     # Сохраняем сводные результаты
     if save_results:
@@ -366,6 +373,8 @@ def compare_models_quality(model_ids: List[str], mode: str = "qa",
     # Строим графики
     if plot_results:
         plot_quality_comparison(all_results)
+    
+    return all_results
 
 def plot_quality_comparison(results: List[Dict]):
     """Строит графики сравнения качества RAG-системы с разными моделями."""

@@ -29,26 +29,77 @@ def create_report(performance_results: List[Dict], quality_results: List[Dict], 
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Собираем все данные в один DataFrame
-    df_performance = pd.DataFrame(performance_results)
-    df_quality = pd.DataFrame(quality_results)
+    # Преобразуем результаты в DataFrame, убедившись что они имеют подходящую структуру
+    # Для производительности
+    perf_list = []
+    for result in performance_results:
+        if "model_id" in result:
+            # Проверяем формат данных
+            if "summary" in result:
+                perf_list.append({
+                    "model_id": result["model_id"],
+                    "summary_perf": result["summary"],
+                    "avg_time": result["summary"].get("avg_time", 0),
+                    "success_rate": result["summary"].get("success_rate", 0)
+                })
+            else:
+                # Если результаты не содержат summary, используем доступные данные
+                perf_list.append({
+                    "model_id": result["model_id"],
+                    "summary_perf": {"avg_time": 0, "success_rate": 0},
+                    "avg_time": 0,
+                    "success_rate": 0
+                })
     
-    # Объединяем данные
-    df = pd.merge(
-        df_performance,
-        df_quality,
-        on="model_id",
-        suffixes=["_perf", "_qual"]
-    )
+    df_performance = pd.DataFrame(perf_list)
+    
+    # Для качества
+    qual_list = []
+    for result in quality_results:
+        if "model_id" in result:
+            qual_list.append({
+                "model_id": result["model_id"],
+                "summary_qual": result,
+                "avg_keyword_coverage_percent": result.get("avg_keyword_coverage_percent", 0),
+                "citation_rate_percent": result.get("citation_rate_percent", 0),
+                "avg_word_count": result.get("avg_word_count", 0)
+            })
+    
+    df_quality = pd.DataFrame(qual_list)
+    
+    # Проверяем наличие данных в DataFrame
+    if df_performance.empty or df_quality.empty:
+        print("Предупреждение: Недостаточно данных для создания сводного отчета")
+        # Создаем отчет только с доступными данными
+        if not df_performance.empty:
+            df = df_performance
+        elif not df_quality.empty:
+            df = df_quality
+        else:
+            # Если нет никаких данных, создаем пустой отчет
+            print("Ошибка: Нет данных для создания отчета")
+            return report_dir
+    else:
+        # Объединяем данные по model_id, если есть оба типа результатов
+        df = pd.merge(
+            df_performance,
+            df_quality,
+            on="model_id",
+            how="outer",  # используем outer join чтобы сохранить все модели
+            suffixes=["_perf", "_qual"]
+        )
+        
+        # Заполняем NaN значения нулями
+        df = df.fillna(0)
     
     # Создаем сводную таблицу
     summary_table = pd.DataFrame({
         "Модель": df["model_id"],
-        "Среднее время ответа (сек)": df["summary_perf"].apply(lambda x: x["avg_time"]),
-        "Успешных запросов (%)": df["summary_perf"].apply(lambda x: x["success_rate"] * 100),
-        "Покрытие ключевых слов (%)": df["avg_keyword_coverage_percent"],
-        "Частота цитирования (%)": df["citation_rate_percent"],
-        "Средн. длина ответа (слов)": df["avg_word_count"]
+        "Среднее время ответа (сек)": df["avg_time"] if "avg_time" in df.columns else 0,
+        "Успешных запросов (%)": df["success_rate"].apply(lambda x: x * 100) if "success_rate" in df.columns else 0,
+        "Покрытие ключевых слов (%)": df["avg_keyword_coverage_percent"] if "avg_keyword_coverage_percent" in df.columns else 0,
+        "Частота цитирования (%)": df["citation_rate_percent"] if "citation_rate_percent" in df.columns else 0,
+        "Средн. длина ответа (слов)": df["avg_word_count"] if "avg_word_count" in df.columns else 0
     })
     
     # Создаем директорию для отчета
@@ -105,32 +156,31 @@ def create_report(performance_results: List[Dict], quality_results: List[Dict], 
             </tr>
         """
     
-    # Добавляем графики
+    # Список доступных графиков
+    available_plots = [
+        {"title": "Производительность моделей", "path": "../benchmark_results/plots/avg_query_time.png"},
+        {"title": "Качество ответов", "path": "../benchmark_results/rag_quality/plots/keyword_coverage.png"},
+        {"title": "Частота цитирования", "path": "../benchmark_results/rag_quality/plots/citation_rate.png"},
+        {"title": "Комбинированный рейтинг", "path": "../benchmark_results/rag_quality/plots/combined_score.png"}
+    ]
+    
+    # Добавляем графики (только если файлы существуют)
     html_report += """
         </table>
         
         <h2>Графики результатов</h2>
-        
+    """
+    
+    for plot in available_plots:
+        if os.path.exists(plot["path"].replace("../", "")):
+            html_report += f"""
         <div class="chart-container">
-            <h3>Производительность моделей</h3>
-            <img src="../benchmark_results/plots/avg_query_time.png" alt="Среднее время выполнения запроса" width="600">
+            <h3>{plot["title"]}</h3>
+            <img src="{plot["path"]}" alt="{plot["title"]}" width="600">
         </div>
-        
-        <div class="chart-container">
-            <h3>Качество ответов</h3>
-            <img src="../benchmark_results/rag_quality/plots/keyword_coverage.png" alt="Покрытие ключевых слов" width="600">
-        </div>
-        
-        <div class="chart-container">
-            <h3>Частота цитирования</h3>
-            <img src="../benchmark_results/rag_quality/plots/citation_rate.png" alt="Частота цитирования" width="600">
-        </div>
-        
-        <div class="chart-container">
-            <h3>Комбинированный рейтинг</h3>
-            <img src="../benchmark_results/rag_quality/plots/combined_score.png" alt="Комбинированный рейтинг" width="600">
-        </div>
-        
+            """
+    
+    html_report += """        
         <div class="footer">
             <p>Отчет создан автоматически системой бенчмаркинга RAG.</p>
         </div>
